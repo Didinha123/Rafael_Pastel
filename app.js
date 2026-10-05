@@ -277,6 +277,13 @@ function montarComanda(p, settings) {
   add(`Data: ${fmtDate(p.created_at)}`);
   add(`Hora: ${fmtTime(p.created_at)}`);
   if (p.customer) add(`Cliente: ${p.customer}`);
+  if (p.channel === 'DELIVERY') {
+    add('', { sep: true });
+    add('*** ENTREGA ***', { align: 'center', bold: true, size: 1.5 });
+    if (p.customer_phone) add(`Tel: ${p.customer_phone}`);
+    if (p.customer_address) add(`End.: ${p.customer_address}`);
+    if (p.neighborhood) add(`Bairro: ${p.neighborhood}`);
+  }
   add('', { sep: true });
   for (const i of p.items) {
     add(`${i.quantity}x ${i.name}`, { bold: true, size: 1.5 });
@@ -290,10 +297,14 @@ function montarComanda(p, settings) {
   add('', { sep: true });
   if (p.payments?.length) {
     for (const pay of p.payments) add(`PAGAMENTO: ${(methods[pay.method] || PAY_LABEL[pay.method] || pay.method).toUpperCase()} ${brlTxt(pay.amount)}`);
+  } else if (p.channel === 'DELIVERY') {
+    add(`PAGAR NA ENTREGA: ${{ PIX: 'PIX', DINHEIRO: 'DINHEIRO', CARTAO: 'CARTÃO' }[p.pay_intent] || ''}`, { bold: true });
+    if (p.pay_intent === 'DINHEIRO' && p.change_for > 0) add(`TROCO PARA: ${brlTxt(p.change_for)}`);
   } else {
     add('PAGAMENTO: PENDENTE');
   }
   if (p.discount > 0) add(`DESCONTO: ${brlTxt(p.discount)}`);
+  if (p.delivery_fee > 0) add(`TAXA DE ENTREGA: ${brlTxt(p.delivery_fee)}`);
   add(`TOTAL: ${brlTxt(p.total)}`, { bold: true, size: 2 });
   return L;
 }
@@ -374,6 +385,8 @@ const periodParams = (s) => (s.period === 'custom' ? { period: 'custom', from: s
 // Componente: detalhe do pedido
 // ======================================================================
 // Detalhe do pedido: status, pagamentos, cancelamento e impressão.
+const PAY_INTENT = { PIX: 'Pix (conferir o comprovante)', DINHEIRO: 'Dinheiro', CARTAO: 'Cartão na entrega' };
+const PAY_INTENT_SHORT = { PIX: 'Pix', DINHEIRO: 'Dinheiro', CARTAO: 'Cartão' };
 const NEXT = { NOVO: ['CONFIRMADO', 'Confirmar'], CONFIRMADO: ['EM_PREPARO', 'Iniciar preparo'], EM_PREPARO: ['PRONTO', 'Marcar pronto'], PRONTO: ['ENTREGUE', 'Entregar'] };
 
 async function openOrder(id, onChange) {
@@ -388,7 +401,9 @@ async function openOrder(id, onChange) {
     body: `<div class="row between wrap gap mb"><div>${statusBadge(o.status)} <span class="muted small">${fmtDateTime(o.created_at)} · por ${esc(o.created_by_name || '-')}</span></div>
         <b style="font-size:1.4rem">${money(o.total)}</b></div>
       ${o.customer ? `<p>👤 <b>${esc(o.customer)}</b> ${esc(o.customer_phone || '')}<br><span class="muted small">${esc(o.customer_address || '')}</span></p>` : ''}
+      ${o.channel === 'DELIVERY' ? `<div class="alert info mt">🛵 <b>Delivery</b> · ${esc(o.neighborhood || '')}<br>📍 ${esc(o.customer_address || '')}<br>📞 ${esc(o.customer_phone || '')} · <a href="${waLink(o.customer_phone)}" target="_blank" rel="noopener">chamar no WhatsApp</a><br>💳 Pagar na entrega: <b>${esc(PAY_INTENT[o.pay_intent] || '-')}</b>${o.change_for > 0 ? ` · troco para ${money(o.change_for)}` : ''}${o.status === 'NOVO' ? '<br><b>⚠️ Aguardando confirmação da loja (o estoque só baixa ao confirmar).</b>' : ''}</div>` : ''}
       <div class="table-wrap"><table><tbody>${o.items.map((i) => `<tr><td>${i.quantity}x ${esc(i.name)}${i.notes ? `<br><span class="small muted">↳ ${esc(i.notes)}</span>` : ''}</td><td class="num">${money(i.unit_price * i.quantity)}</td></tr>`).join('')}
+        ${o.delivery_fee > 0 ? `<tr><td>Taxa de entrega (${esc(o.neighborhood || '')})</td><td class="num">${money(o.delivery_fee)}</td></tr>` : ''}
         ${o.discount > 0 ? `<tr><td>Desconto</td><td class="num">− ${money(o.discount)}</td></tr>` : ''}</tbody></table></div>
       ${o.notes ? `<div class="alert warn mt">OBS: ${esc(o.notes)}</div>` : ''}
       <h3 class="mt">Pagamentos</h3>
@@ -781,10 +796,10 @@ function paintList(rows) {
   const list = $('#list'); if (!list) return;
   list.innerHTML = rows.length ? `<div class="table-wrap"><table>
     <thead><tr><th>Pedido</th><th>Horário</th><th>Cliente</th><th>Itens</th><th>Obs.</th><th>Pagamento</th><th class="num">Valor</th><th>Status</th></tr></thead>
-    <tbody>${rows.map((o) => `<tr class="clickable" data-id="${o.id}"><td><b>${esc(o.label)}</b></td>
-      <td>${fmtTime(o.created_at)}<br><span class="small muted">${fmtDate(o.created_at)}</span></td><td>${esc(o.customer || '—')}</td>
+    <tbody>${rows.map((o) => `<tr class="clickable" data-id="${o.id}"><td><b>${esc(o.label)}</b>${o.channel === 'DELIVERY' ? '<br><span class="badge blue">🛵 Delivery</span>' : ''}</td>
+      <td>${fmtTime(o.created_at)}<br><span class="small muted">${fmtDate(o.created_at)}</span></td><td>${esc(o.customer || '—')}${o.channel === 'DELIVERY' ? `<br><span class="small muted">📍 ${esc(o.neighborhood || '')}</span>` : ''}</td>
       <td class="small">${o.items.map((i) => `${i.quantity}x ${esc(i.name)}`).join('<br>')}</td><td class="small">${esc(o.notes || '')}</td>
-      <td class="small">${o.status === 'CANCELADO' ? '—' : o.remaining > 0 ? `<span class="badge red">A receber ${money(o.remaining)}</span>` : [...new Set(o.payments.map((p) => methodLabel(p.method)))].join(' + ') || '—'}</td>
+      <td class="small">${o.status === 'CANCELADO' ? '—' : o.remaining > 0 ? (o.channel === 'DELIVERY' && !o.paid ? `<span class="badge yellow">${esc(PAY_INTENT_SHORT[o.pay_intent] || 'A receber')} · ${money(o.remaining)}</span>` : `<span class="badge red">A receber ${money(o.remaining)}</span>`) : [...new Set(o.payments.map((p) => methodLabel(p.method)))].join(' + ') || '—'}</td>
       <td class="num"><b>${money(o.total)}</b></td><td>${statusBadge(o.status)}</td></tr>`).join('')}</tbody></table></div>`
     : '<div class="empty card">Nenhum pedido encontrado</div>';
 }
@@ -797,25 +812,17 @@ return { render: render, destroy: typeof destroy === 'function' ? destroy : unde
 // ======================================================================
 // Página: kitchen
 Pages.kitchen = (function () {
-const NEXT = {
-  NOVO: ['CONFIRMADO', '✅ Aceitar pedido', 'primary'],
-  CONFIRMADO: ['EM_PREPARO', '🔥 Iniciar preparo', 'primary'],
-  EM_PREPARO: ['PRONTO', '🟢 Marcar como pronto', 'success'],
-  PRONTO: ['ENTREGUE', '📦 Entregue', ''],
-};
+// Painel da cozinha: SOMENTE LEITURA. Mostra as comandas em andamento e avisa quando chega pedido novo.
+// Quem muda o status do pedido é o atendente/administrador (tela Pedidos).
 const POLL_MS = 6000;
 
-let timer; let known = null; let orders = []; let host;
-const autoPrint = () => localStorage.getItem('pastelaria.kitchenAutoPrint') === '1';
+let timer; let known = null; let orders = [];
 
 async function render(el) {
-  host = el; known = null;
+  known = null;
   el.innerHTML = `<div class="page-head"><h1>👨‍🍳 Cozinha</h1>
-    <div class="row gap wrap"><label class="check"><input type="checkbox" id="auto" ${autoPrint() ? 'checked' : ''}> Imprimir novos pedidos automaticamente neste computador</label>
-    <span class="badge green" id="live">● ao vivo</span></div></div>
+    <span class="badge green" id="live">● ao vivo</span></div>
     <div id="board" class="kitchen"></div>`;
-  $('#auto').onchange = (e) => localStorage.setItem('pastelaria.kitchenAutoPrint', e.target.checked ? '1' : '0');
-  $('#board').onclick = onClick;
   const cached = swrRead('/kitchen');
   if (cached) { orders = cached.slice().sort((a, b) => a.id - b.id); draw(); } // abre na hora com o último painel
   await poll();
@@ -824,13 +831,9 @@ async function render(el) {
 
 function destroy() { clearInterval(timer); }
 
-let pending = 0; // ações da cozinha ainda sendo enviadas (a atualização automática espera)
-
 async function poll() {
-  if (pending > 0) return;
   try {
     const list = await api.get('/kitchen');
-    if (pending > 0) return;
     swrWrite('/kitchen', list);
     orders = list.slice().sort((a, b) => a.id - b.id);
     $('#live') && ($('#live').className = 'badge green', $('#live').textContent = '● ao vivo');
@@ -841,10 +844,7 @@ async function poll() {
   if (!$('#board')) return;
   const fresh = known ? orders.filter((o) => !known.has(o.id)) : [];
   known = new Set(orders.map((o) => o.id));
-  if (fresh.length) {
-    beep(); toast(`Novo pedido ${fresh.map((o) => o.label).join(', ')}`, 'ok');
-    if (autoPrint()) for (const o of fresh) imprimirPedido(o, state.settings).catch((e) => toast(e.message, 'err', 6000));
-  }
+  if (fresh.length) { beep(); toast(`Novo pedido ${fresh.map((o) => o.label).join(', ')}`, 'ok'); }
   draw();
 }
 
@@ -852,42 +852,13 @@ function draw() {
   const board = $('#board');
   board.innerHTML = orders.length ? orders.map((o) => {
     const mins = sinceMin(o.created_at);
-    const next = NEXT[o.status];
     return `<article class="ticket ${o.status} ${mins >= 20 && o.status !== 'PRONTO' ? 'late' : ''}">
       <div class="ticket-head"><span class="n">PEDIDO ${esc(o.label)}</span><span class="muted small">${fmtTime(o.created_at)} · ${mins} min</span></div>
-      <div style="padding:0 14px">${statusBadge(o.status)} ${o.customer ? `<span class="small muted">👤 ${esc(o.customer)}</span>` : ''}</div>
+      <div style="padding:0 14px 8px">${statusBadge(o.status)} ${o.customer ? `<span class="small muted">👤 ${esc(o.customer)}</span>` : ''}</div>
       <ul>${o.items.map((i) => `<li>${i.quantity}x ${esc(i.name)}${i.notes ? `<small>↳ ${esc(i.notes)}</small>` : ''}</li>`).join('')}</ul>
       ${o.notes ? `<div class="obs">OBS: ${esc(o.notes)}</div>` : ''}
-      <div class="ticket-actions">
-        ${next ? `<button class="btn lg ${next[2]}" data-id="${o.id}" data-st="${next[0]}">${next[1]}</button>` : ''}
-        <button class="btn sm" data-print="${o.id}">🖨️ Imprimir</button></div></article>`;
+      <div style="height:10px"></div></article>`;
   }).join('') : '<div class="empty card" style="grid-column:1/-1">Nenhum pedido em andamento 🎉</div>';
-}
-
-async function onClick(e) {
-  const pr = e.target.closest('[data-print]');
-  if (pr) {
-    const o = orders.find((x) => x.id === Number(pr.dataset.print));
-    return imprimirPedido(o, state.settings).catch((err) => toast(err.message, 'err', 6000));
-  }
-  const b = e.target.closest('[data-st]'); if (!b) return;
-  // Resposta otimista: o cartão muda na hora; se o servidor recusar, volta ao estado anterior.
-  const id = Number(b.dataset.id); const st = b.dataset.st;
-  const o = orders.find((x) => x.id === id); if (!o) return;
-  const prev = o.status;
-  o.status = st;
-  if (st === 'ENTREGUE') orders = orders.filter((x) => x !== o);
-  draw();
-  pending++;
-  try {
-    await api.post(`/orders/${id}/status`, { status: st });
-  } catch (err) {
-    toast(err.message, 'err');
-    o.status = prev;
-    if (orders.indexOf(o) < 0) { orders.push(o); orders.sort((a, c) => a.id - c.id); }
-    draw();
-  } finally { pending--; }
-  poll();
 }
 
 return { render: render, destroy: typeof destroy === 'function' ? destroy : undefined };
@@ -1397,7 +1368,7 @@ let tab = 'general';
 
 async function render(el) {
   el.innerHTML = `<div class="page-head"><h1>⚙️ Configurações</h1></div>
-    <div class="tabs">${[['general', 'Geral'], ['printer', 'Impressora'], ['payments', 'Pagamentos'], ['users', 'Usuários'], ['audit', 'Auditoria']].map(([k, l]) => `<button class="tab" data-t="${k}">${l}</button>`).join('')}</div>
+    <div class="tabs">${[['general', 'Geral'], ['printer', 'Impressora'], ['delivery', 'Delivery'], ['payments', 'Pagamentos'], ['users', 'Usuários'], ['audit', 'Auditoria']].map(([k, l]) => `<button class="tab" data-t="${k}">${l}</button>`).join('')}</div>
     <div id="c"></div>`;
   el.querySelector('.tabs').onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { tab = b.dataset.t; draw(); } };
   await draw();
@@ -1435,13 +1406,54 @@ async function draw() {
     c.innerHTML = `<form class="card form" style="max-width:640px" id="f">
       <div class="two"><label>Tamanho do papel<select name="paper"><option value="80" ${p.paper === 80 ? 'selected' : ''}>80 mm</option><option value="58" ${p.paper === 58 ? 'selected' : ''}>58 mm</option></select></label>
         <label>Cópias<input name="copies" type="number" min="1" max="5" value="${p.copies}"></label></div>
-      <label class="check"><input type="checkbox" name="auto" ${p.auto_print_kitchen ? 'checked' : ''}> Imprimir comanda automaticamente ao finalizar o pedido no PDV</label>
-      <p class="muted small">Para a cozinha imprimir novos pedidos no próprio computador, use a opção na tela Cozinha.</p>
+      <label class="check"><input type="checkbox" name="auto" ${p.auto_print_kitchen ? 'checked' : ''}> Imprimir a comanda da cozinha automaticamente ao finalizar cada pedido</label>
+      <label class="check"><input type="checkbox" name="online" ${localStorage.getItem('pastelaria.printOnline') === '1' ? 'checked' : ''}> <span>Neste aparelho, imprimir automaticamente os <b>pedidos de delivery</b> que chegarem do site <span class="muted small">(marque em apenas um aparelho, para não imprimir em duplicidade)</span></span></label>
+      <div class="alert info small">🖨️ <b>Impressora da cozinha sem computador:</b> ligue a impressora térmica ao computador/tablet do caixa e deixe-a como <b>impressora padrão</b>. Para imprimir sem abrir a janela de impressão, abra o sistema pelo Chrome com o atalho <code>--kiosk-printing</code> (veja o passo a passo com quem instalou o sistema). Use "Cópias" para imprimir uma via extra, se precisar.</div>
       <div class="row gap"><button class="btn primary">Salvar</button><button type="button" class="btn" id="test">🖨️ Imprimir teste</button></div></form>`;
     const f = $('#f');
     const read = () => ({ mode: 'browser', paper: Number(f.paper.value), copies: Number(f.copies.value), auto_print_kitchen: f.auto.checked });
-    f.onsubmit = async (e) => { e.preventDefault(); if (await save({ printer: read() })) draw(); };
+    f.onsubmit = async (e) => { e.preventDefault(); localStorage.setItem('pastelaria.printOnline', f.online.checked ? '1' : '0'); if (await save({ printer: read() })) draw(); };
     $('#test').onclick = () => imprimirTeste({ ...s, printer: read() }).then(() => toast('Teste enviado')).catch((e) => toast(e.message, 'err', 6000));
+  } else if (tab === 'delivery') {
+    const d = JSON.parse(JSON.stringify(s.delivery || {}));
+    d.neighborhoods = d.neighborhoods || [];
+    const link = location.origin + location.pathname.replace(/index\.html$/, '') + '?cardapio';
+    const fmt = (n) => String(n ?? 0).replace('.', ',');
+    const sync = () => {
+      const f = $('#f'); if (!f) return;
+      Object.assign(d, { enabled: f.enabled.checked, whatsapp: f.whatsapp.value, min_order: parseNum(f.min.value), max_order: parseNum(f.max.value) || 500,
+        pix_key: f.pix_key.value, pix_name: f.pix_name.value, notes: f.notes.value, save_orders: f.save.checked });
+    };
+    const dr = () => {
+      c.innerHTML = `<form class="card form" style="max-width:760px" id="f">
+        <label class="check"><input type="checkbox" name="enabled" ${d.enabled ? 'checked' : ''}> <b>Receber pedidos pelo site (delivery)</b></label>
+        <div class="alert info small">🔗 Link do cardápio para divulgar (Instagram, WhatsApp, QR code):<br><b>${esc(link)}</b> <button type="button" class="btn sm" id="copylink">Copiar</button></div>
+        <div class="two"><label>WhatsApp da loja (com DDD)<input name="whatsapp" inputmode="tel" placeholder="(11) 99999-0000" value="${esc(d.whatsapp)}"></label>
+          <label>Pedido mínimo (R$)<input name="min" inputmode="decimal" value="${fmt(d.min_order)}"></label></div>
+        <div class="two"><label>Chave Pix<input name="pix_key" maxlength="120" value="${esc(d.pix_key)}"></label>
+          <label>Nome do recebedor do Pix<input name="pix_name" maxlength="80" value="${esc(d.pix_name)}"></label></div>
+        <label>Valor máximo por pedido (R$) <span class="muted small">(proteção contra pedidos falsos)</span><input name="max" inputmode="decimal" value="${fmt(d.max_order || 500)}"></label>
+        <label>Aviso na página (ex.: tempo de entrega, horário)<input name="notes" maxlength="300" value="${esc(d.notes)}"></label>
+        <label class="check"><input type="checkbox" name="save" ${d.save_orders !== false ? 'checked' : ''}> <span>Registrar o pedido no sistema (aparece em Pedidos, avisa e imprime) — <b>recomendado</b>. Desmarcado: o cliente só envia a mensagem pelo WhatsApp.</span></label>
+        <h3>Bairros atendidos e taxa de entrega</h3>
+        ${d.neighborhoods.map((n, i) => `<div class="pay-row" style="grid-template-columns:1fr 110px auto auto"><input data-h="${i}" data-f="name" placeholder="Bairro" maxlength="60" value="${esc(n.name)}"><input data-h="${i}" data-f="fee" inputmode="decimal" placeholder="Taxa R$" value="${fmt(n.fee)}"><label class="check"><input type="checkbox" data-h="${i}" data-f="active" ${n.active !== false ? 'checked' : ''}> ativo</label><button type="button" class="icon-btn" data-rmh="${i}" aria-label="Remover">🗑️</button></div>`).join('')}
+        <div><button type="button" class="btn" id="addh">+ Bairro</button></div>
+        <div class="row gap"><button class="btn primary">Salvar</button></div></form>`;
+      const f = $('#f');
+      c.oninput = (e) => { const t = e.target; if (t.dataset.h === undefined) return; const n = d.neighborhoods[Number(t.dataset.h)]; if (t.dataset.f === 'name') n.name = t.value; if (t.dataset.f === 'fee') n.fee = parseNum(t.value); };
+      c.onchange = (e) => { const t = e.target; if (t.dataset.h !== undefined && t.dataset.f === 'active') d.neighborhoods[Number(t.dataset.h)].active = t.checked; };
+      c.onclick = (e) => {
+        if (e.target.id === 'addh') { sync(); d.neighborhoods.push({ name: '', fee: 0, active: true }); dr(); }
+        const rm = e.target.closest('[data-rmh]'); if (rm) { sync(); d.neighborhoods.splice(Number(rm.dataset.rmh), 1); dr(); }
+        if (e.target.id === 'copylink') navigator.clipboard?.writeText(link).then(() => toast('Link copiado'));
+      };
+      f.onsubmit = async (e) => {
+        e.preventDefault(); sync();
+        const body = { ...d, neighborhoods: d.neighborhoods.filter((n) => (n.name || '').trim()).map((n) => ({ name: n.name.trim(), fee: n.fee || 0, active: n.active !== false })) };
+        if (await save({ delivery: body })) draw();
+      };
+    };
+    dr();
   } else if (tab === 'payments') {
     const list = s.payment_methods.map((m) => ({ ...m }));
     const dr = () => {
@@ -1489,6 +1501,40 @@ return { render: render, destroy: typeof destroy === 'function' ? destroy : unde
 })();
 
 // ======================================================================
+// Aviso de pedidos do site (delivery) para a equipe da loja
+// ======================================================================
+const OnlineWatch = (function () {
+  let timer = null; let first = true; const seen = new Set();
+  const printOn = () => localStorage.getItem('pastelaria.printOnline') === '1';
+  function badge(n) {
+    const a = document.querySelector('.nav a[data-page="orders"]'); if (!a) return;
+    let b = a.querySelector('.nbadge');
+    if (!n) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement('span'); b.className = 'badge red nbadge'; b.style.marginLeft = 'auto'; a.append(b); }
+    b.textContent = n;
+  }
+  async function tick() {
+    if (document.hidden || !state.user || state.user.role === 'COZINHA') return;
+    let list;
+    try { list = await api.get('/online/new'); } catch { return; }
+    const fresh = list.filter((o) => !seen.has(o.id));
+    list.forEach((o) => seen.add(o.id));
+    badge(list.length);
+    if (first) { first = false; return; } // não avisa o que já estava na fila quando a tela abriu
+    if (fresh.length) {
+      beep(); toast(`🛵 Novo pedido online: ${fresh.map((o) => o.label).join(', ')}`, 'ok', 9000);
+      if (printOn()) fresh.forEach((o) => imprimirPedido(o, state.settings).catch((e) => toast(e.message, 'err', 6000)));
+    }
+  }
+  document.addEventListener('visibilitychange', () => { if (timer && !document.hidden) tick(); }); // ao voltar para a aba, confere na hora
+  return {
+    start() { this.stop(); first = true; seen.clear(); tick(); timer = setInterval(tick, 30000); },
+    stop() { if (timer) clearInterval(timer); timer = null; },
+    check: tick,
+  };
+})();
+
+// ======================================================================
 // Aplicação (login, menu, rotas)
 // ======================================================================
 const ALL = ['ADMIN', 'ATENDENTE', 'COZINHA'];
@@ -1496,7 +1542,7 @@ const STAFF = ['ADMIN', 'ATENDENTE'];
 const PAGES = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊', roles: STAFF },
   { id: 'pdv', label: 'Novo pedido', icon: '🛒', roles: STAFF },
-  { id: 'orders', label: 'Pedidos', icon: '🧾', roles: ALL },
+  { id: 'orders', label: 'Pedidos', icon: '🧾', roles: STAFF },
   { id: 'kitchen', label: 'Cozinha', icon: '👨‍🍳', roles: ALL },
   { id: 'products', label: 'Produtos', icon: '🥟', roles: ['ADMIN'] },
   { id: 'stock', label: 'Estoque', icon: '📦', roles: STAFF },
@@ -1519,6 +1565,7 @@ setUnauthorizedHandler(() => {
 
 function showLogin() {
   current?.destroy?.(); current = null;
+  OnlineWatch.stop();
   localStorage.removeItem('pastelaria.boot'); swrClear(); // nada de dados de outra sessão na tela de login
   root.innerHTML = `<div class="login-wrap"><form class="login form" id="login">
     <div class="emoji">🥟</div><h1>${esc(state.settings?.name || 'Pastelaria')}</h1>
@@ -1615,7 +1662,7 @@ async function boot() {
 
   if (cached && cached.user && cached.settings) {
     // Já usou antes neste aparelho: abre na hora com os dados guardados e confirma com o servidor por trás.
-    applyBoot(cached); layout(); route(); prefetch();
+    applyBoot(cached); layout(); route(); prefetch(); OnlineWatch.start();
     fresh.then((b) => {
       const changed = JSON.stringify(b.settings) !== JSON.stringify(cached.settings) || b.user.role !== cached.user.role || b.user.name !== cached.user.name;
       applyBoot(b);
@@ -1637,7 +1684,173 @@ async function boot() {
   layout();
   route();
   prefetch();
+  OnlineWatch.start();
 }
 
+// ======================================================================
+// Cardápio público (delivery): página do cliente, sem login
+// Acesso: .../index.html?cardapio
+// ======================================================================
+const SHOP_MODE = /(^|[?&])cardapio(=|&|$)/.test(location.search) || /^#\/cardapio/.test(location.hash);
+
+const waDigits = (n) => { const d = String(n || '').replace(/\D/g, ''); return d.length === 10 || d.length === 11 ? '55' + d : d; };
+const waLink = (n, text) => `https://wa.me/${waDigits(n)}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
+
+const Shop = (function () {
+  const KEY = 'pastelaria.shop';
+  const PAY = { PIX: 'Pix (envio o comprovante)', DINHEIRO: 'Dinheiro', CARTAO: 'Cartão na entrega' };
+  let menu = null; let cart = {}; let cat = 'all';
+
+  const saved = () => { try { return JSON.parse(localStorage.getItem(KEY + '.customer') || '{}'); } catch { return {}; } };
+  const lines = () => Object.entries(cart).map(([id, q]) => { const p = menu.products.find((x) => x.id === Number(id)); return p ? { p, q } : null; }).filter(Boolean);
+  const subtotal = () => lines().reduce((s, l) => s + l.p.price * l.q, 0);
+  const count = () => lines().reduce((s, l) => s + l.q, 0);
+  const saveCart = () => localStorage.setItem(KEY + '.cart', JSON.stringify(cart));
+  const wa = () => menu.delivery.whatsapp;
+
+  async function start() {
+    root.innerHTML = '<div class="shop"><div class="empty">Carregando cardápio…</div></div>';
+    try {
+      menu = await request('GET', '/public/menu');
+    } catch (e) {
+      root.innerHTML = `<div class="shop"><div class="alert err">${esc(e.message)}</div><button class="btn primary" onclick="location.reload()">Tentar de novo</button></div>`;
+      return;
+    }
+    document.title = `${menu.store.name} — Cardápio`;
+    try { cart = JSON.parse(localStorage.getItem(KEY + '.cart') || '{}'); } catch { cart = {}; }
+    Object.keys(cart).forEach((id) => { if (!menu.products.some((p) => p.id === Number(id) && p.available)) delete cart[id]; }); // item que saiu do cardápio
+    root.addEventListener('click', onClick);
+    draw();
+  }
+
+  function head() {
+    const d = menu.delivery;
+    return `<header class="shop-head">${menu.store.logo ? `<img src="${menu.store.logo}" alt="">` : '<div class="logo">🥟</div>'}
+      <div><h1>${esc(menu.store.name)}</h1><div class="small muted">${menu.store.address ? `📍 ${esc(menu.store.address)}` : ''}</div></div></header>
+      ${d.notes ? `<div class="alert info small">${esc(d.notes)}</div>` : ''}
+      ${d.enabled && d.min_order > 0 ? `<div class="small muted mb">Pedido mínimo: ${money(d.min_order)} · A taxa de entrega depende do bairro.</div>` : ''}`;
+  }
+
+  function card(p) {
+    const q = cart[p.id] || 0;
+    return `<div class="shop-item ${p.available ? '' : 'off'}">
+      <div class="shop-ph">${p.photo ? `<img src="${p.photo}" alt="" loading="lazy">` : '🥟'}</div>
+      <div class="shop-info"><b>${esc(p.name)}</b>${p.description ? `<span class="small muted">${esc(p.description)}</span>` : ''}<span class="price">${money(p.price)}</span></div>
+      <div class="shop-qty">${!p.available ? '<span class="small" style="color:var(--red)">Indisponível</span>'
+        : q ? `<button data-dec="${p.id}" aria-label="Menos">−</button><b>${q}</b><button data-inc="${p.id}" aria-label="Mais">+</button>`
+          : `<button class="add" data-inc="${p.id}">Adicionar</button>`}</div></div>`;
+  }
+
+  function draw() {
+    const y = window.scrollY;
+    const d = menu.delivery;
+    if (!d.enabled) {
+      root.innerHTML = `<div class="shop">${head()}<div class="alert warn">No momento não estamos recebendo pedidos pelo site.${d.whatsapp ? ` Fale com a gente pelo <a href="${waLink(d.whatsapp)}" target="_blank" rel="noopener">WhatsApp</a>.` : ''}</div></div>`;
+      return;
+    }
+    const cats = [{ id: 'all', name: 'Tudo' }, ...menu.categories.filter((c) => menu.products.some((p) => p.category_id === c.id))];
+    const prods = menu.products.filter((p) => cat === 'all' || p.category_id === cat);
+    root.innerHTML = `<div class="shop">${head()}
+      <div class="cats shop-cats">${cats.map((c) => `<button class="tab ${String(c.id) === String(cat) ? 'active' : ''}" data-cat="${c.id}">${esc(c.name)}</button>`).join('')}</div>
+      <div class="shop-list">${prods.map(card).join('') || '<div class="empty">Nenhum item disponível</div>'}</div>
+      ${count() ? `<div class="shop-bar"><button class="btn primary lg" data-act="cart">🛒 Ver pedido · ${count()} ${count() === 1 ? 'item' : 'itens'} · ${money(subtotal())}</button></div>` : ''}</div>`;
+    window.scrollTo(0, y);
+  }
+
+  function onClick(e) {
+    const t = e.target.closest('button, a'); if (!t) return;
+    if (t.dataset.cat) { cat = t.dataset.cat === 'all' ? 'all' : Number(t.dataset.cat); draw(); }
+    if (t.dataset.inc) { const id = t.dataset.inc; cart[id] = Math.min((cart[id] || 0) + 1, 20); saveCart(); draw(); }
+    if (t.dataset.dec) { const id = t.dataset.dec; cart[id] = (cart[id] || 0) - 1; if (cart[id] <= 0) delete cart[id]; saveCart(); draw(); }
+    if (t.dataset.act === 'cart') checkout();
+  }
+
+  function checkout() {
+    const d = menu.delivery; const c = saved();
+    const m = modal({
+      title: 'Seu pedido',
+      body: `<form class="form" id="shopform">
+        <div class="shop-lines">${lines().map((l) => `<div class="row between"><span>${l.q}x ${esc(l.p.name)}</span><b>${money(l.p.price * l.q)}</b></div>`).join('')}</div>
+        <label>Seu nome<input name="name" required maxlength="80" autocomplete="name" value="${esc(c.name || '')}"></label>
+        <label>WhatsApp / telefone (com DDD)<input name="phone" required inputmode="tel" autocomplete="tel" placeholder="(11) 99999-0000" value="${esc(c.phone || '')}"></label>
+        <label>Bairro<select name="hood" required><option value="">Selecione…</option>${d.neighborhoods.map((n) => `<option value="${esc(n.name)}" ${n.name === c.hood ? 'selected' : ''}>${esc(n.name)} — taxa ${money(n.fee)}</option>`).join('')}</select></label>
+        <label>Endereço (rua, número, complemento)<input name="address" required maxlength="200" autocomplete="street-address" value="${esc(c.address || '')}"></label>
+        <fieldset class="shop-pay"><legend>Pagamento na entrega</legend>
+          ${Object.entries(PAY).map(([k, l]) => `<label class="check"><input type="radio" name="pay" value="${k}" ${(c.pay || 'PIX') === k ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
+        <label id="changebox" class="hidden">Troco para quanto? (opcional)<input name="change" inputmode="decimal" placeholder="Ex.: 50"></label>
+        <label>Observações<textarea name="notes" rows="2" maxlength="300" placeholder="Ex.: sem cebola, interfone não funciona…"></textarea></label>
+        <input name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;opacity:0;height:0">
+        <div class="totals" id="shoptotals"></div>
+        <div class="alert err hidden" id="shoperr"></div>
+        <button class="btn success lg" id="sendbtn">Enviar pedido</button>
+        <p class="muted small center">${d.save_orders ? 'O pedido é registrado na loja e depois você confirma pelo WhatsApp.' : 'Você será levado ao WhatsApp da loja com o pedido pronto.'}</p></form>`,
+    });
+    const f = m.el.querySelector('#shopform');
+    const fee = () => (d.neighborhoods.find((n) => n.name === f.hood.value) || { fee: 0 }).fee;
+    const refresh = () => {
+      $('#changebox', m.el).classList.toggle('hidden', f.pay.value !== 'DINHEIRO');
+      $('#shoptotals', m.el).innerHTML = `<div class="row between"><span>Subtotal</span><span>${money(subtotal())}</span></div>
+        <div class="row between"><span>Entrega${f.hood.value ? ` (${esc(f.hood.value)})` : ''}</span><span>${f.hood.value ? money(fee()) : '—'}</span></div>
+        <div class="row between grand"><span>Total</span><span>${money(subtotal() + fee())}</span></div>`;
+    };
+    f.addEventListener('change', refresh); refresh();
+
+    f.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const err = (msg) => { const b = $('#shoperr', m.el); b.textContent = msg; b.classList.remove('hidden'); };
+      if (subtotal() < (d.min_order || 0)) return err(`Pedido mínimo: ${money(d.min_order)}. Adicione mais itens.`);
+      const data = {
+        name: f.name.value.trim(), phone: f.phone.value.trim(), hood: f.hood.value, address: f.address.value.trim(), pay: f.pay.value,
+        change: f.pay.value === 'DINHEIRO' ? parseNum(f.change.value) : 0, notes: f.notes.value.trim(),
+        lines: lines().map((l) => ({ id: l.p.id, q: l.q, name: l.p.name })), sub: subtotal(), fee: fee(), total: subtotal() + fee(),
+      };
+      const btn = $('#sendbtn', m.el); btn.disabled = true; btn.textContent = 'Enviando…';
+      let res = null;
+      try {
+        if (d.save_orders) {
+          res = await request('POST', '/public/order', {
+            name: data.name, phone: data.phone, address: data.address, neighborhood: data.hood, payment: data.pay, change_for: data.change || undefined,
+            notes: data.notes || undefined, website: f.website.value, items: data.lines.map((l) => ({ product_id: l.id, quantity: l.q })),
+          });
+          Object.assign(data, { sub: res.subtotal, fee: res.fee, total: res.total }); // valores oficiais calculados pela loja
+        }
+      } catch (e) {
+        btn.disabled = false; btn.textContent = 'Enviar pedido'; return err(e.message);
+      }
+      localStorage.setItem(KEY + '.customer', JSON.stringify({ name: data.name, phone: data.phone, hood: data.hood, address: data.address, pay: data.pay }));
+      cart = {}; saveCart(); draw();
+      done(m, res, data);
+    };
+  }
+
+  function message(res, x) {
+    const out = [`*${res ? `Pedido ${res.label}` : 'Novo pedido'} — ${menu.store.name}*`];
+    x.lines.forEach((l) => out.push(`${l.q}x ${l.name}`));
+    out.push('', `Subtotal: ${money(x.sub)}`, `Entrega (${x.hood}): ${money(x.fee)}`, `*Total: ${money(x.total)}*`, '');
+    out.push(`Nome: ${x.name}`, `Tel: ${x.phone}`, `Endereço: ${x.address} — ${x.hood}`);
+    out.push(`Pagamento: ${PAY[x.pay]}${x.pay === 'DINHEIRO' && x.change ? ` (troco para ${money(x.change)})` : ''}`);
+    if (x.notes) out.push(`Obs: ${x.notes}`);
+    return out.join('\n');
+  }
+
+  function done(m, res, x) {
+    const d = menu.delivery;
+    const pix = x.pay === 'PIX'
+      ? (d.pix_key ? `<div class="alert info" style="text-align:left">💠 <b>Pague com Pix</b><br>Chave: <b>${esc(d.pix_key)}</b> <button type="button" class="btn sm" data-copy="${esc(d.pix_key)}">Copiar</button>
+          ${d.pix_name ? `<br>Favorecido: ${esc(d.pix_name)}` : ''}<br>Valor: <b>${money(x.total)}</b><br><span class="small">Envie o comprovante pelo WhatsApp.</span></div>`
+        : '<div class="alert info small">A loja vai enviar a chave Pix pelo WhatsApp.</div>') : '';
+    m.el.querySelector('.modal-body').innerHTML = `<div class="center">
+      <div style="font-size:3rem">✅</div><h2>${res ? `Pedido ${esc(res.label)} recebido!` : 'Quase lá!'}</h2>
+      <p>${res ? 'A loja já recebeu o seu pedido. ' : ''}Toque abaixo para <b>enviar a mensagem no WhatsApp</b> da loja${res ? ' e agilizar a confirmação' : ''}.</p>
+      <a class="btn success lg" style="display:inline-block;margin:8px 0 16px;text-decoration:none" target="_blank" rel="noopener" href="${waLink(d.whatsapp, message(res, x))}">💬 Enviar pelo WhatsApp</a>
+      ${pix}
+      <p class="small muted mt">Total: <b>${money(x.total)}</b> (entrega ${money(x.fee)}) · pagamento na entrega</p>
+      <button class="btn" data-close>Fechar</button></div>`;
+    m.el.querySelector('[data-copy]')?.addEventListener('click', (e) => navigator.clipboard?.writeText(e.target.dataset.copy).then(() => toast('Chave Pix copiada')));
+  }
+
+  return { start };
+})();
+
 window.addEventListener('hashchange', route);
-if (apiConfigured()) boot(); else showLogin();
+if (SHOP_MODE) Shop.start(); else if (apiConfigured()) boot(); else showLogin();
