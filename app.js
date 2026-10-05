@@ -1417,17 +1417,17 @@ async function draw() {
   } else if (tab === 'delivery') {
     const d = JSON.parse(JSON.stringify(s.delivery || {}));
     d.neighborhoods = d.neighborhoods || [];
-    const link = location.origin + location.pathname.replace(/index\.html$/, '') + '?cardapio';
     const fmt = (n) => String(n ?? 0).replace('.', ',');
     const sync = () => {
       const f = $('#f'); if (!f) return;
       Object.assign(d, { enabled: f.enabled.checked, whatsapp: f.whatsapp.value, min_order: parseNum(f.min.value), max_order: parseNum(f.max.value) || 500,
-        pix_key: f.pix_key.value, pix_name: f.pix_name.value, notes: f.notes.value, save_orders: f.save.checked });
+        pix_key: f.pix_key.value, pix_name: f.pix_name.value, notes: f.notes.value, save_orders: f.save.checked, shop_url: f.shop_url.value.trim() });
     };
     const dr = () => {
       c.innerHTML = `<form class="card form" style="max-width:760px" id="f">
         <label class="check"><input type="checkbox" name="enabled" ${d.enabled ? 'checked' : ''}> <b>Receber pedidos pelo site (delivery)</b></label>
-        <div class="alert info small">🔗 Link do cardápio para divulgar (Instagram, WhatsApp, QR code):<br><b>${esc(link)}</b> <button type="button" class="btn sm" id="copylink">Copiar</button></div>
+        <label>Link do site do cliente (cardápio online) <span class="muted small">(o endereço onde o cardápio foi publicado)</span><input name="shop_url" placeholder="https://..." maxlength="200" value="${esc(d.shop_url)}"></label>
+        ${d.shop_url ? `<div class="alert info small">🔗 Divulgue este link (Instagram, WhatsApp, QR code):<br><b>${esc(d.shop_url)}</b> <button type="button" class="btn sm" id="copylink">Copiar</button></div>` : '<div class="alert warn small">Informe o link acima para poder copiá-lo e divulgá-lo.</div>'}
         <div class="two"><label>WhatsApp da loja (com DDD)<input name="whatsapp" inputmode="tel" placeholder="(11) 99999-0000" value="${esc(d.whatsapp)}"></label>
           <label>Pedido mínimo (R$)<input name="min" inputmode="decimal" value="${fmt(d.min_order)}"></label></div>
         <div class="two"><label>Chave Pix<input name="pix_key" maxlength="120" value="${esc(d.pix_key)}"></label>
@@ -1445,7 +1445,7 @@ async function draw() {
       c.onclick = (e) => {
         if (e.target.id === 'addh') { sync(); d.neighborhoods.push({ name: '', fee: 0, active: true }); dr(); }
         const rm = e.target.closest('[data-rmh]'); if (rm) { sync(); d.neighborhoods.splice(Number(rm.dataset.rmh), 1); dr(); }
-        if (e.target.id === 'copylink') navigator.clipboard?.writeText(link).then(() => toast('Link copiado'));
+        if (e.target.id === 'copylink') navigator.clipboard?.writeText(d.shop_url).then(() => toast('Link copiado'));
       };
       f.onsubmit = async (e) => {
         e.preventDefault(); sync();
@@ -1688,169 +1688,10 @@ async function boot() {
 }
 
 // ======================================================================
-// Cardápio público (delivery): página do cliente, sem login
-// Acesso: .../index.html?cardapio
+// Links do WhatsApp
 // ======================================================================
-const SHOP_MODE = /(^|[?&])cardapio(=|&|$)/.test(location.search) || /^#\/cardapio/.test(location.hash);
-
 const waDigits = (n) => { const d = String(n || '').replace(/\D/g, ''); return d.length === 10 || d.length === 11 ? '55' + d : d; };
 const waLink = (n, text) => `https://wa.me/${waDigits(n)}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
 
-const Shop = (function () {
-  const KEY = 'pastelaria.shop';
-  const PAY = { PIX: 'Pix (envio o comprovante)', DINHEIRO: 'Dinheiro', CARTAO: 'Cartão na entrega' };
-  let menu = null; let cart = {}; let cat = 'all';
-
-  const saved = () => { try { return JSON.parse(localStorage.getItem(KEY + '.customer') || '{}'); } catch { return {}; } };
-  const lines = () => Object.entries(cart).map(([id, q]) => { const p = menu.products.find((x) => x.id === Number(id)); return p ? { p, q } : null; }).filter(Boolean);
-  const subtotal = () => lines().reduce((s, l) => s + l.p.price * l.q, 0);
-  const count = () => lines().reduce((s, l) => s + l.q, 0);
-  const saveCart = () => localStorage.setItem(KEY + '.cart', JSON.stringify(cart));
-  const wa = () => menu.delivery.whatsapp;
-
-  async function start() {
-    root.innerHTML = '<div class="shop"><div class="empty">Carregando cardápio…</div></div>';
-    try {
-      menu = await request('GET', '/public/menu');
-    } catch (e) {
-      root.innerHTML = `<div class="shop"><div class="alert err">${esc(e.message)}</div><button class="btn primary" onclick="location.reload()">Tentar de novo</button></div>`;
-      return;
-    }
-    document.title = `${menu.store.name} — Cardápio`;
-    try { cart = JSON.parse(localStorage.getItem(KEY + '.cart') || '{}'); } catch { cart = {}; }
-    Object.keys(cart).forEach((id) => { if (!menu.products.some((p) => p.id === Number(id) && p.available)) delete cart[id]; }); // item que saiu do cardápio
-    root.addEventListener('click', onClick);
-    draw();
-  }
-
-  function head() {
-    const d = menu.delivery;
-    return `<header class="shop-head">${menu.store.logo ? `<img src="${menu.store.logo}" alt="">` : '<div class="logo">🥟</div>'}
-      <div><h1>${esc(menu.store.name)}</h1><div class="small muted">${menu.store.address ? `📍 ${esc(menu.store.address)}` : ''}</div></div></header>
-      ${d.notes ? `<div class="alert info small">${esc(d.notes)}</div>` : ''}
-      ${d.enabled && d.min_order > 0 ? `<div class="small muted mb">Pedido mínimo: ${money(d.min_order)} · A taxa de entrega depende do bairro.</div>` : ''}`;
-  }
-
-  function card(p) {
-    const q = cart[p.id] || 0;
-    return `<div class="shop-item ${p.available ? '' : 'off'}">
-      <div class="shop-ph">${p.photo ? `<img src="${p.photo}" alt="" loading="lazy">` : '🥟'}</div>
-      <div class="shop-info"><b>${esc(p.name)}</b>${p.description ? `<span class="small muted">${esc(p.description)}</span>` : ''}<span class="price">${money(p.price)}</span></div>
-      <div class="shop-qty">${!p.available ? '<span class="small" style="color:var(--red)">Indisponível</span>'
-        : q ? `<button data-dec="${p.id}" aria-label="Menos">−</button><b>${q}</b><button data-inc="${p.id}" aria-label="Mais">+</button>`
-          : `<button class="add" data-inc="${p.id}">Adicionar</button>`}</div></div>`;
-  }
-
-  function draw() {
-    const y = window.scrollY;
-    const d = menu.delivery;
-    if (!d.enabled) {
-      root.innerHTML = `<div class="shop">${head()}<div class="alert warn">No momento não estamos recebendo pedidos pelo site.${d.whatsapp ? ` Fale com a gente pelo <a href="${waLink(d.whatsapp)}" target="_blank" rel="noopener">WhatsApp</a>.` : ''}</div></div>`;
-      return;
-    }
-    const cats = [{ id: 'all', name: 'Tudo' }, ...menu.categories.filter((c) => menu.products.some((p) => p.category_id === c.id))];
-    const prods = menu.products.filter((p) => cat === 'all' || p.category_id === cat);
-    root.innerHTML = `<div class="shop">${head()}
-      <div class="cats shop-cats">${cats.map((c) => `<button class="tab ${String(c.id) === String(cat) ? 'active' : ''}" data-cat="${c.id}">${esc(c.name)}</button>`).join('')}</div>
-      <div class="shop-list">${prods.map(card).join('') || '<div class="empty">Nenhum item disponível</div>'}</div>
-      ${count() ? `<div class="shop-bar"><button class="btn primary lg" data-act="cart">🛒 Ver pedido · ${count()} ${count() === 1 ? 'item' : 'itens'} · ${money(subtotal())}</button></div>` : ''}</div>`;
-    window.scrollTo(0, y);
-  }
-
-  function onClick(e) {
-    const t = e.target.closest('button, a'); if (!t) return;
-    if (t.dataset.cat) { cat = t.dataset.cat === 'all' ? 'all' : Number(t.dataset.cat); draw(); }
-    if (t.dataset.inc) { const id = t.dataset.inc; cart[id] = Math.min((cart[id] || 0) + 1, 20); saveCart(); draw(); }
-    if (t.dataset.dec) { const id = t.dataset.dec; cart[id] = (cart[id] || 0) - 1; if (cart[id] <= 0) delete cart[id]; saveCart(); draw(); }
-    if (t.dataset.act === 'cart') checkout();
-  }
-
-  function checkout() {
-    const d = menu.delivery; const c = saved();
-    const m = modal({
-      title: 'Seu pedido',
-      body: `<form class="form" id="shopform">
-        <div class="shop-lines">${lines().map((l) => `<div class="row between"><span>${l.q}x ${esc(l.p.name)}</span><b>${money(l.p.price * l.q)}</b></div>`).join('')}</div>
-        <label>Seu nome<input name="name" required maxlength="80" autocomplete="name" value="${esc(c.name || '')}"></label>
-        <label>WhatsApp / telefone (com DDD)<input name="phone" required inputmode="tel" autocomplete="tel" placeholder="(11) 99999-0000" value="${esc(c.phone || '')}"></label>
-        <label>Bairro<select name="hood" required><option value="">Selecione…</option>${d.neighborhoods.map((n) => `<option value="${esc(n.name)}" ${n.name === c.hood ? 'selected' : ''}>${esc(n.name)} — taxa ${money(n.fee)}</option>`).join('')}</select></label>
-        <label>Endereço (rua, número, complemento)<input name="address" required maxlength="200" autocomplete="street-address" value="${esc(c.address || '')}"></label>
-        <fieldset class="shop-pay"><legend>Pagamento na entrega</legend>
-          ${Object.entries(PAY).map(([k, l]) => `<label class="check"><input type="radio" name="pay" value="${k}" ${(c.pay || 'PIX') === k ? 'checked' : ''}> ${l}</label>`).join('')}</fieldset>
-        <label id="changebox" class="hidden">Troco para quanto? (opcional)<input name="change" inputmode="decimal" placeholder="Ex.: 50"></label>
-        <label>Observações<textarea name="notes" rows="2" maxlength="300" placeholder="Ex.: sem cebola, interfone não funciona…"></textarea></label>
-        <input name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;opacity:0;height:0">
-        <div class="totals" id="shoptotals"></div>
-        <div class="alert err hidden" id="shoperr"></div>
-        <button class="btn success lg" id="sendbtn">Enviar pedido</button>
-        <p class="muted small center">${d.save_orders ? 'O pedido é registrado na loja e depois você confirma pelo WhatsApp.' : 'Você será levado ao WhatsApp da loja com o pedido pronto.'}</p></form>`,
-    });
-    const f = m.el.querySelector('#shopform');
-    const fee = () => (d.neighborhoods.find((n) => n.name === f.hood.value) || { fee: 0 }).fee;
-    const refresh = () => {
-      $('#changebox', m.el).classList.toggle('hidden', f.pay.value !== 'DINHEIRO');
-      $('#shoptotals', m.el).innerHTML = `<div class="row between"><span>Subtotal</span><span>${money(subtotal())}</span></div>
-        <div class="row between"><span>Entrega${f.hood.value ? ` (${esc(f.hood.value)})` : ''}</span><span>${f.hood.value ? money(fee()) : '—'}</span></div>
-        <div class="row between grand"><span>Total</span><span>${money(subtotal() + fee())}</span></div>`;
-    };
-    f.addEventListener('change', refresh); refresh();
-
-    f.onsubmit = async (ev) => {
-      ev.preventDefault();
-      const err = (msg) => { const b = $('#shoperr', m.el); b.textContent = msg; b.classList.remove('hidden'); };
-      if (subtotal() < (d.min_order || 0)) return err(`Pedido mínimo: ${money(d.min_order)}. Adicione mais itens.`);
-      const data = {
-        name: f.name.value.trim(), phone: f.phone.value.trim(), hood: f.hood.value, address: f.address.value.trim(), pay: f.pay.value,
-        change: f.pay.value === 'DINHEIRO' ? parseNum(f.change.value) : 0, notes: f.notes.value.trim(),
-        lines: lines().map((l) => ({ id: l.p.id, q: l.q, name: l.p.name })), sub: subtotal(), fee: fee(), total: subtotal() + fee(),
-      };
-      const btn = $('#sendbtn', m.el); btn.disabled = true; btn.textContent = 'Enviando…';
-      let res = null;
-      try {
-        if (d.save_orders) {
-          res = await request('POST', '/public/order', {
-            name: data.name, phone: data.phone, address: data.address, neighborhood: data.hood, payment: data.pay, change_for: data.change || undefined,
-            notes: data.notes || undefined, website: f.website.value, items: data.lines.map((l) => ({ product_id: l.id, quantity: l.q })),
-          });
-          Object.assign(data, { sub: res.subtotal, fee: res.fee, total: res.total }); // valores oficiais calculados pela loja
-        }
-      } catch (e) {
-        btn.disabled = false; btn.textContent = 'Enviar pedido'; return err(e.message);
-      }
-      localStorage.setItem(KEY + '.customer', JSON.stringify({ name: data.name, phone: data.phone, hood: data.hood, address: data.address, pay: data.pay }));
-      cart = {}; saveCart(); draw();
-      done(m, res, data);
-    };
-  }
-
-  function message(res, x) {
-    const out = [`*${res ? `Pedido ${res.label}` : 'Novo pedido'} — ${menu.store.name}*`];
-    x.lines.forEach((l) => out.push(`${l.q}x ${l.name}`));
-    out.push('', `Subtotal: ${money(x.sub)}`, `Entrega (${x.hood}): ${money(x.fee)}`, `*Total: ${money(x.total)}*`, '');
-    out.push(`Nome: ${x.name}`, `Tel: ${x.phone}`, `Endereço: ${x.address} — ${x.hood}`);
-    out.push(`Pagamento: ${PAY[x.pay]}${x.pay === 'DINHEIRO' && x.change ? ` (troco para ${money(x.change)})` : ''}`);
-    if (x.notes) out.push(`Obs: ${x.notes}`);
-    return out.join('\n');
-  }
-
-  function done(m, res, x) {
-    const d = menu.delivery;
-    const pix = x.pay === 'PIX'
-      ? (d.pix_key ? `<div class="alert info" style="text-align:left">💠 <b>Pague com Pix</b><br>Chave: <b>${esc(d.pix_key)}</b> <button type="button" class="btn sm" data-copy="${esc(d.pix_key)}">Copiar</button>
-          ${d.pix_name ? `<br>Favorecido: ${esc(d.pix_name)}` : ''}<br>Valor: <b>${money(x.total)}</b><br><span class="small">Envie o comprovante pelo WhatsApp.</span></div>`
-        : '<div class="alert info small">A loja vai enviar a chave Pix pelo WhatsApp.</div>') : '';
-    m.el.querySelector('.modal-body').innerHTML = `<div class="center">
-      <div style="font-size:3rem">✅</div><h2>${res ? `Pedido ${esc(res.label)} recebido!` : 'Quase lá!'}</h2>
-      <p>${res ? 'A loja já recebeu o seu pedido. ' : ''}Toque abaixo para <b>enviar a mensagem no WhatsApp</b> da loja${res ? ' e agilizar a confirmação' : ''}.</p>
-      <a class="btn success lg" style="display:inline-block;margin:8px 0 16px;text-decoration:none" target="_blank" rel="noopener" href="${waLink(d.whatsapp, message(res, x))}">💬 Enviar pelo WhatsApp</a>
-      ${pix}
-      <p class="small muted mt">Total: <b>${money(x.total)}</b> (entrega ${money(x.fee)}) · pagamento na entrega</p>
-      <button class="btn" data-close>Fechar</button></div>`;
-    m.el.querySelector('[data-copy]')?.addEventListener('click', (e) => navigator.clipboard?.writeText(e.target.dataset.copy).then(() => toast('Chave Pix copiada')));
-  }
-
-  return { start };
-})();
-
 window.addEventListener('hashchange', route);
-if (SHOP_MODE) Shop.start(); else if (apiConfigured()) boot(); else showLogin();
+if (apiConfigured()) boot(); else showLogin();
