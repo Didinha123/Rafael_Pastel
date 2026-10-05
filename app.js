@@ -1,5 +1,6 @@
 /**
- * PASTELARIA PDV — Frontend (JavaScript puro).AAAA
+ * VERSÃO 2 — sem login, API_URL preenchida (04/10/2026)
+ * PASTELARIA PDV — Frontend (JavaScript puro).
  * Fala com o backend Code.gs (Google Apps Script + Google Sheets).
  */
 
@@ -184,7 +185,15 @@ async function request(method, path, body) {
     if (data.status === 401 && path !== '/auth/login') onUnauthorized();
     throw Object.assign(new Error(data.error), { status: data.status });
   }
+  if (method !== 'GET') { // gravou algo: descarta os caches que ficaram velhos
+    if (/^\/cash/.test(path)) swrDrop('/cash/current');
+    if (/^\/(products|categories|ingredients|stock)/.test(path)) { swrDrop('/products'); swrDrop('/categories'); }
+  }
   return data.data;
+}
+function swrDrop(path) {
+  delete swrMem[path];
+  try { localStorage.removeItem(SWR_PREFIX + path); } catch { /* ignora */ }
 }
 
 const api = {
@@ -193,6 +202,35 @@ const api = {
   put: (p, b = {}) => request('PUT', p, b),
   del: (p) => request('DELETE', p),
 };
+
+// Cache "mostra na hora e atualiza por trás" (stale-while-revalidate): devolve já o que foi carregado
+// na última vez (memória ou localStorage) e busca a versão nova em segundo plano.
+const SWR_PREFIX = 'pastelaria.swr:';
+const swrMem = {};
+function swrRead(path) {
+  if (swrMem[path] !== undefined) return swrMem[path];
+  try { const s = localStorage.getItem(SWR_PREFIX + path); if (s) return (swrMem[path] = JSON.parse(s)); } catch { /* ignora */ }
+  return undefined;
+}
+function swrWrite(path, data) {
+  swrMem[path] = data;
+  try { localStorage.setItem(SWR_PREFIX + path, JSON.stringify(data)); } catch { /* sem espaço: segue só em memória */ }
+}
+function swrClear() {
+  Object.keys(swrMem).forEach((k) => delete swrMem[k]);
+  Object.keys(localStorage).filter((k) => k.indexOf(SWR_PREFIX) === 0).forEach((k) => localStorage.removeItem(k));
+}
+function swr(path, onFresh) {
+  const cached = swrRead(path);
+  const fresh = request('GET', path).then((d) => {
+    const changed = cached === undefined || JSON.stringify(d) !== JSON.stringify(cached);
+    swrWrite(path, d);
+    if (cached !== undefined && changed && onFresh) onFresh(d);
+    return d;
+  });
+  if (cached !== undefined) { fresh.catch(() => {}); return Promise.resolve(cached); }
+  return fresh;
+}
 
 const qs = (o) => {
   const p = new URLSearchParams();
@@ -407,8 +445,10 @@ let timer;
 
 async function render(el) {
   el.innerHTML = '<div id="dash"></div>';
+  const cached = swrRead('/dashboard');
+  if (cached) paint(cached); // mostra na hora o último resultado; a atualização vem em seguida
   await load();
-  timer = setInterval(load, 20000);
+  timer = setInterval(() => { if (!document.hidden) load(); }, 45000);
 }
 function destroy() { clearInterval(timer); }
 
@@ -421,7 +461,11 @@ function bars(items, valueKey, labelKey, fmt) {
 
 async function load() {
   let d;
-  try { d = await api.get('/dashboard'); } catch { return; }
+  try { d = await api.get('/dashboard'); swrWrite('/dashboard', d); } catch { return; }
+  paint(d);
+}
+
+function paint(d) {
   const box = $('#dash'); if (!box) return;
   const isAdmin = state.user.role === 'ADMIN';
   const topMax = Math.max(...d.top.map((t) => t.qty), 1);
@@ -459,13 +503,26 @@ const subtotal = () => cart.items.reduce((s, i) => s + i.price * i.qty, 0);
 const discountValue = () => Math.min(subtotal(), Math.round((cart.discountMode === 'percent' ? subtotal() * cart.discount / 100 : cart.discount) * 100) / 100);
 const total = () => Math.max(0, Math.round((subtotal() - discountValue()) * 100) / 100);
 
+function readData() {
+  products = swrRead('/products') || [];
+  categories = (swrRead('/categories') || []).filter((c) => c.active);
+  cashOpen = !!(swrRead('/cash/current') || {}).register;
+}
+const cashBanner = () => (cashOpen ? '' : '<div class="alert warn">⚠️ Caixa fechado — você pode lançar pedidos, mas só receberá pagamentos após <a href="#/cash">abrir o caixa</a>.</div>');
+function refreshData() { // chamado quando chega a versão nova dos dados
+  readData();
+  if (!$('#grid')) return;
+  $('#cashbanner').innerHTML = cashBanner();
+  drawCats(); drawGrid();
+}
+
 async function render(el) {
   host = el;
-  [products, categories] = await Promise.all([api.get('/products'), api.get('/categories')]);
-  categories = categories.filter((c) => c.active);
-  cashOpen = !!(await api.get('/cash/current').catch(() => ({}))).register;
+  // Três chamadas em paralelo; se já houver dados da última visita, a tela abre na hora e atualiza por trás.
+  await Promise.all([swr('/products', refreshData), swr('/categories', refreshData), swr('/cash/current', refreshData).catch(() => ({}))]);
+  readData();
   el.innerHTML = `
-    ${cashOpen ? '' : `<div class="alert warn">⚠️ Caixa fechado — você pode lançar pedidos, mas só receberá pagamentos após <a href="#/cash">abrir o caixa</a>.</div>`}
+    <div id="cashbanner">${cashBanner()}</div>
     <div class="pdv">
       <section class="pdv-products">
         <div class="row gap mb"><input id="q" class="search" style="max-width:none" placeholder="🔍 Buscar produto ou código…" autocomplete="off"></div>
@@ -662,9 +719,9 @@ function checkout() {
       });
       m.close();
       Object.assign(cart, { items: [], customer: null, customerName: '', notes: '', discount: 0 });
-      products = await api.get('/products');
-      drawGrid(); drawCart();
-      done(order);
+      drawCart();
+      done(order); // mostra o resultado já; o estoque dos produtos atualiza em segundo plano
+      api.get('/products').then((p) => { swrWrite('/products', p); products = p; if ($('#grid')) drawGrid(); }).catch(() => {});
     } catch (e) {
       toast(e.message, 'err'); draw();
     }
@@ -704,15 +761,23 @@ async function render(el) {
   $('#q').oninput = debounce((e) => { search = e.target.value; load(); });
   $('#date').onchange = (e) => { date = e.target.value; load(); };
   $('#list').onclick = (e) => { const tr = e.target.closest('[data-id]'); if (tr) openOrder(Number(tr.dataset.id), load); };
+  const cached = swrRead(ordersPath());
+  if (cached) paintList(cached); // abre na hora com a última lista
   await load();
-  timer = setInterval(load, 10000);
+  timer = setInterval(() => { if (!document.hidden) load(); }, 20000);
 }
 function destroy() { clearInterval(timer); }
 
+const ordersPath = () => '/orders' + qs({ status, q: search, limit: 200, ...(date ? { period: 'custom', from: date, to: date } : {}) });
+
 async function load() {
-  const range = date ? { period: 'custom', from: date, to: date } : {};
+  const path = ordersPath();
   let rows;
-  try { rows = await api.get('/orders' + qs({ status, q: search, limit: 200, ...range })); } catch { return; }
+  try { rows = await api.get(path); swrWrite(path, rows); } catch { return; }
+  if (path === ordersPath()) paintList(rows); // ignora resposta de um filtro que já mudou
+}
+
+function paintList(rows) {
   const list = $('#list'); if (!list) return;
   list.innerHTML = rows.length ? `<div class="table-wrap"><table>
     <thead><tr><th>Pedido</th><th>Horário</th><th>Cliente</th><th>Itens</th><th>Obs.</th><th>Pagamento</th><th class="num">Valor</th><th>Status</th></tr></thead>
@@ -751,15 +816,23 @@ async function render(el) {
     <div id="board" class="kitchen"></div>`;
   $('#auto').onchange = (e) => localStorage.setItem('pastelaria.kitchenAutoPrint', e.target.checked ? '1' : '0');
   $('#board').onclick = onClick;
+  const cached = swrRead('/kitchen');
+  if (cached) { orders = cached.slice().sort((a, b) => a.id - b.id); draw(); } // abre na hora com o último painel
   await poll();
-  timer = setInterval(poll, POLL_MS);
+  timer = setInterval(() => { if (!document.hidden) poll(); }, POLL_MS);
 }
 
 function destroy() { clearInterval(timer); }
 
+let pending = 0; // ações da cozinha ainda sendo enviadas (a atualização automática espera)
+
 async function poll() {
+  if (pending > 0) return;
   try {
-    orders = (await api.get('/kitchen')).sort((a, b) => a.id - b.id);
+    const list = await api.get('/kitchen');
+    if (pending > 0) return;
+    swrWrite('/kitchen', list);
+    orders = list.slice().sort((a, b) => a.id - b.id);
     $('#live') && ($('#live').className = 'badge green', $('#live').textContent = '● ao vivo');
   } catch (e) {
     if ($('#live')) { $('#live').className = 'badge red'; $('#live').textContent = '● sem conexão'; }
@@ -798,11 +871,23 @@ async function onClick(e) {
     return imprimirPedido(o, state.settings).catch((err) => toast(err.message, 'err', 6000));
   }
   const b = e.target.closest('[data-st]'); if (!b) return;
-  b.disabled = true;
+  // Resposta otimista: o cartão muda na hora; se o servidor recusar, volta ao estado anterior.
+  const id = Number(b.dataset.id); const st = b.dataset.st;
+  const o = orders.find((x) => x.id === id); if (!o) return;
+  const prev = o.status;
+  o.status = st;
+  if (st === 'ENTREGUE') orders = orders.filter((x) => x !== o);
+  draw();
+  pending++;
   try {
-    await api.post(`/orders/${b.dataset.id}/status`, { status: b.dataset.st });
-    await poll();
-  } catch (err) { toast(err.message, 'err'); b.disabled = false; }
+    await api.post(`/orders/${id}/status`, { status: st });
+  } catch (err) {
+    toast(err.message, 'err');
+    o.status = prev;
+    if (orders.indexOf(o) < 0) { orders.push(o); orders.sort((a, c) => a.id - c.id); }
+    draw();
+  } finally { pending--; }
+  poll();
 }
 
 return { render: render, destroy: typeof destroy === 'function' ? destroy : undefined };
@@ -1434,6 +1519,7 @@ setUnauthorizedHandler(() => {
 
 function showLogin() {
   current?.destroy?.(); current = null;
+  localStorage.removeItem('pastelaria.boot'); swrClear(); // nada de dados de outra sessão na tela de login
   root.innerHTML = `<div class="login-wrap"><form class="login form" id="login">
     <div class="emoji">🥟</div><h1>${esc(state.settings?.name || 'Pastelaria')}</h1>
     <p class="muted center" style="margin:0 0 8px">Entre para continuar</p>
@@ -1511,13 +1597,36 @@ async function route() {
 }
 
 // Entrada: com REQUIRE_LOGIN = false no Code.gs o servidor aceita sem login e a tela de login nem aparece.
+const BOOT_KEY = 'pastelaria.boot';
+const applyBoot = (b) => { state.user = b.user; state.openAccess = !!b.open_access; state.settings = b.settings; };
+
+// Aquece os dados mais usados em segundo plano (ficam prontos quando você abrir o PDV).
+function prefetch() {
+  setTimeout(() => {
+    ['/products', '/categories'].forEach((p) => swr(p).catch(() => {}));
+    if (state.user && state.user.role !== 'COZINHA') swr('/cash/current').catch(() => {});
+  }, 400);
+}
+
 async function boot() {
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(BOOT_KEY) || 'null'); } catch { /* ignora */ }
+  const fresh = api.get('/bootstrap').then((b) => { localStorage.setItem(BOOT_KEY, JSON.stringify(b)); return b; });
+
+  if (cached && cached.user && cached.settings) {
+    // Já usou antes neste aparelho: abre na hora com os dados guardados e confirma com o servidor por trás.
+    applyBoot(cached); layout(); route(); prefetch();
+    fresh.then((b) => {
+      const changed = JSON.stringify(b.settings) !== JSON.stringify(cached.settings) || b.user.role !== cached.user.role || b.user.name !== cached.user.name;
+      applyBoot(b);
+      if (changed) { layout(); route(); }
+    }).catch((e) => { if (e.status === 401) { setToken(null); showLogin(); } });
+    return;
+  }
+
   root.innerHTML = '<div class="login-wrap"><div class="login center"><div class="emoji">🥟</div><h1>Carregando…</h1><p class="muted">Conectando à planilha (o 1º acesso pode levar alguns segundos)</p></div></div>';
   try {
-    const me = await api.get('/auth/me');
-    state.user = me.user;
-    state.openAccess = !!me.open_access;
-    await loadSettings();
+    applyBoot(await fresh);
   } catch (e) {
     state.user = null;
     if (e.status === 401) { setToken(null); return showLogin(); }
@@ -1527,6 +1636,7 @@ async function boot() {
   }
   layout();
   route();
+  prefetch();
 }
 
 window.addEventListener('hashchange', route);
