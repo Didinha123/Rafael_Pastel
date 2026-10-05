@@ -1,5 +1,5 @@
 /**
- * PASTELARIA PDV — Frontend (JavaScript puro).
+ * PASTELARIA PDV — Frontend (JavaScript puro).AAAA
  * Fala com o backend Code.gs (Google Apps Script + Google Sheets).
  */
 
