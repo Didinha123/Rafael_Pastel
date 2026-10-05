@@ -5,7 +5,7 @@
 
 // ===================== CONFIGURAÇÃO =====================
 // Cole aqui a URL do Web App do Apps Script (termina com /exec).
-const API_URL = 'COLE_AQUI_A_URL_DO_APPS_SCRIPT';
+const API_URL = 'https://script.google.com/macros/s/AKfycbx64kcUSTZpx_TwoopjSJpZrZRZnO5Gxy38-seQL3ytl7cXoTJyZCXpm1cZoGEiX7fY/exec';
 // ========================================================
 
 const Pages = {};
@@ -1463,14 +1463,17 @@ function layout() {
     <aside class="sidebar" id="sidebar">
       <div class="brand">${s.logo ? `<img src="${s.logo}" alt="">` : '<div class="logo">🥟</div>'}<span>${esc(s.name)}</span></div>
       <nav class="nav">${pages.map((p) => `<a href="#/${p.id}" data-page="${p.id}"><span>${p.icon}</span>${p.label}</a>`).join('')}</nav>
-      <div class="userbox"><b>${esc(state.user.name)}</b>${ROLE[state.user.role]}
-        <button class="btn sm" id="pw">Alterar senha</button><button class="btn sm" id="logout">Sair</button></div>
+      ${state.openAccess ? '<div class="userbox"><b>Acesso livre</b><span class="muted small">sem login</span></div>'
+        : `<div class="userbox"><b>${esc(state.user.name)}</b>${ROLE[state.user.role]}
+        <button class="btn sm" id="pw">Alterar senha</button><button class="btn sm" id="logout">Sair</button></div>`}
     </aside>
     <main class="main" id="view"></main></div>`;
   $('#burger').onclick = () => $('#sidebar').classList.toggle('open');
   $('#sidebar').addEventListener('click', (e) => { if (e.target.closest('a')) $('#sidebar').classList.remove('open'); });
-  $('#logout').onclick = () => { setToken(null); state.user = null; showLogin(); };
-  $('#pw').onclick = changePassword;
+  if (!state.openAccess) {
+    $('#logout').onclick = () => { setToken(null); state.user = null; showLogin(); };
+    $('#pw').onclick = changePassword;
+  }
 }
 
 async function changePassword() {
@@ -1507,18 +1510,23 @@ async function route() {
   }
 }
 
+// Entrada: com REQUIRE_LOGIN = false no Code.gs o servidor aceita sem login e a tela de login nem aparece.
 async function boot() {
   try {
+    const me = await api.get('/auth/me');
+    state.user = me.user;
+    state.openAccess = !!me.open_access;
     await loadSettings();
-    if (!state.user) state.user = (await api.get('/auth/me')).user;
-  } catch {
-    setToken(null); state.user = null;
-    try { await loadSettings(); } catch { /* sem login: segue só com a tela */ }
-    return showLogin();
+  } catch (e) {
+    state.user = null;
+    if (e.status === 401) { setToken(null); return showLogin(); }
+    root.innerHTML = `<div class="login-wrap"><div class="login form"><div class="emoji">🥟</div><h1>Não foi possível abrir</h1>
+      <div class="alert err">${esc(e.message)}</div><button class="btn primary lg" onclick="location.reload()">Tentar de novo</button></div></div>`;
+    return;
   }
   layout();
   route();
 }
 
 window.addEventListener('hashchange', route);
-if (apiConfigured() && getToken()) boot(); else showLogin();
+if (apiConfigured()) boot(); else showLogin();
