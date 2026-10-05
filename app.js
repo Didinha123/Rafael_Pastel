@@ -1512,6 +1512,7 @@ async function route() {
 
 // Entrada: com REQUIRE_LOGIN = false no Code.gs o servidor aceita sem login e a tela de login nem aparece.
 async function boot() {
+  root.innerHTML = '<div class="login-wrap"><div class="login center"><div class="emoji">🥟</div><h1>Carregando…</h1><p class="muted">Conectando à planilha (o 1º acesso pode levar alguns segundos)</p></div></div>';
   try {
     const me = await api.get('/auth/me');
     state.user = me.user;
